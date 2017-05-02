@@ -1,6 +1,7 @@
 import os,path,sys,shutil
 import numpy as np
 import argparse
+from dcgan import BatchGenerator,DCGAN
 
 if __name__=="__main__":
     parser = argparse.ArgumentParser()
@@ -9,7 +10,9 @@ if __name__=="__main__":
     parser.add_argument("--saveFolder","-s",dest="saveFolder",type=str,default="models")
     parser.add_argument("--reload","-l",dest="reload",type=str,default=None)
     args = parser.parse_args()
+    args.zdim = 36
 
-    gan = DCGAN(args)
+    batch = BatchGenerator()
+    gan = DCGAN(isTraining=True,imageSize=[28,28],args=args)
 
-    gan.train()
+    gan.train(f_batch=batch.getBatch())

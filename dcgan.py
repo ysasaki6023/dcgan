@@ -3,26 +3,42 @@ import tensorflow as tf
 import numpy as np
 import argparse
 
+
+class BatchGenerator:
+    def __init__(self):
+        from tensorflow.examples.tutorials.mnist import input_data
+        mnist = input_data.read_data_sets("MNIST_data/", one_hot=False)
+        self.image = mnist.train.images
+        self.label = mnist.train.labels
+
+        self.image = np.reshape(self.image, [len(self.image), 28, 28])
+
+    def getOne(self):
+        idx = np.random.randint(0,len(self.image)-1)
+        x,t = self.image[idx],self.label[idx]
+        if color:
+            x = np.expand_dims(x,axis=2)
+            x = np.tile(x,(1,3))
+        return x,t
+
+    def getBatch(self,nBatch,color=True):
+        idx = np.random.randint(0,len(self.image)-1,nBatch)
+        x,t = self.image[idx],self.label[idx]
+        if color:
+            x = np.expand_dims(x,axis=3)
+            x = np.tile(x,(1,1,3))
+        return x,t
+
 class DCGAN:
-    def __init__(self,args):
+    def __init__(self,isTraining,imageSize,args):
         self.nBatch = args.nBatch
         self.learnRate = args.learnRate
         self.zdim = args.zdim
+        self.isTraining = isTraining
+        self.imageSize = imageSize
+        self.buildModel()
+
         return
-
-
-    super(Generator, self).__init__(
-            l0z = L.Linear(nz, 6*6*512, wscale=0.02*math.sqrt(nz)),
-            dc1 = L.Deconvolution2D(512, 256, 4, stride=2, pad=1, wscale=0.02*math.sqrt(4*4*512)),
-            dc2 = L.Deconvolution2D(256, 128, 4, stride=2, pad=1, wscale=0.02*math.sqrt(4*4*256)),
-            dc3 = L.Deconvolution2D(128, 64, 4, stride=2, pad=1, wscale=0.02*math.sqrt(4*4*128)),
-            dc4 = L.Deconvolution2D(64, 3, 4, stride=2, pad=1, wscale=0.02*math.sqrt(4*4*64)),
-            bn0l = L.BatchNormalization(6*6*512),
-            bn0 = L.BatchNormalization(512),
-            bn1 = L.BatchNormalization(256),
-            bn2 = L.BatchNormalization(128),
-            bn3 = L.BatchNormalization(64),
-            )
 
     def _fc_variable(self, weight_shape,name="fc"):
         with tf.variable_scope(name):
@@ -55,26 +71,109 @@ class DCGAN:
     def _deconv2d(self, x, W, output_shape, stride=1):
         # x           : [nBatch, height, width, in_channels]
         # output_shape: [nBatch, height, width, out_channels]
-        return tf.nn.conv2d_transpose(x, W, output_shape=output_shape, stride=[1,stride,stride,1], padding = "VALID",data_format="NHWC")
+        return tf.nn.conv2d_transpose(x, W, output_shape=output_shape, strides=[1,stride,stride,1], padding = "VALID",data_format="NHWC")
 
     def leakyReLU(self,x,alpha=0.1):
         return tf.maximum(x*alpha,x) 
 
-    def buildModel(self):
-        with tf.variable_scope("Generateor"):
-            self.z = tf.placeholder(tf.float32, [self.nBatch, self.zdim],name="z")
 
-            h = self.z
+    def buildGenerator(self,z):
+        with tf.variable_scope("Generateor") as scope:
+            h = z
 
-            self.g_fc1_w, self.g_fc1_b = self._fc_variable([self.zdim,6*6*512],name="l0z")
+            # fc1
+            assert self.zdim == 6*6
+            self.g_fc1_w, self.g_fc1_b = self._fc_variable([self.zdim,6*6*512],name="fc1")
             h = tf.matmul(h, self.g_fc1_w) + self.g_fc1_b
 
-            h = tf.reshape(h,())
+            #
+            h = tf.reshape(h,(self.nBatch,6,6,512))
 
+            # deconv1
+            self.g_deconv1_w, self.g_deconv1_b = self._conv_variable([4,4,512,256],name="deconv1")
+            h = self._deconv2d(h,self.g_deconv1_w, output_shape=[self.nBatch,8,8,256], stride=2) + self.g_deconv1_b
+            h = tf.contrib.layers.batch_norm(h, decay=0.9, updates_collections=None, epsilon=1e-5, scale=True, is_training=self.isTraining, scope="gNorm1")
+            h = tf.nn.relu(h)
 
-        with tf.variable_scope("Discriminator"):
-        
+            # deconv2
+            self.g_deconv2_w, self.g_deconv2_b = self._conv_variable([4,4,256,3],name="deconv2")
+            h = self._deconv2d(h,self.g_deconv2_w, output_shape=[self.nBatch,16,16,3], stride=2) + self.g_deconv2_b
+            h = tf.contrib.layers.batch_norm(h, decay=0.9, updates_collections=None, epsilon=1e-5, scale=True, is_training=self.isTraining, scope="gNorm2")
+            h = tf.nn.relu(h)
+
+            # sigmoid
+            y = tf.nn.sigmoid(h)
+
+        return y
+
+    def buildDiscriminator(self,y,reuse=False):
+        with tf.variable_scope("Discriminator") as scope:
+            if reuse: scope.reuse_variables()
+
+            h = y
+
+            # conv1
+            self.d_conv1_w, self.d_conv1_b = self._conv_variable([4,4,3,128],name="conv1")
+            h = self._conv2d(h,self.d_conv1_w, [self.nBatch,8,8,256], stride=2) + self.d_conv1_b
+            h = tf.contrib.layers.batch_norm(h, decay=0.9, updates_collections=None, epsilon=1e-5, scale=True, is_training=self.isTraining, scope="dNorm1")
+            h = leakyReLU(h)
+
+            # conv2
+            self.d_conv2_w, self.d_conv2_b = self._conv_variable([4,4,128,256],name="conv2")
+            h = self._conv2d(h,self.d_conv1_w, [self.nBatch,4,4,256], stride=2) + self.d_conv2_b
+            h = tf.contrib.layers.batch_norm(h, decay=0.9, updates_collections=None, epsilon=1e-5, scale=True, is_training=self.isTraining, scope="dNorm2")
+            h = leakyReLU(h)
+
+            # fc1
+            n_b, n_h, n_w, n_f = [int(x) for x in h.get_shape()]
+            self.d_fc1_w, self.d_fc1_b = self._fc_variable([1,n_h*n_w*n_f],name="fc1")
+            h = tf.matmul(h, self.d_fc1_w) + self.d_fc1_b
+            
+            d_logit = h
+            d       = tf.nn.sigmoid(d_logit)
+
+        return d,d_logit
+
+    def buildModel(self):
+        # define variables
+        self.z      = tf.placeholder(tf.float32, [self.nBatch, self.zdim],name="z")
+        self.x      = tf.placeholder(tf.float32, [self.nBatch, self.imageSize[0], self.imageSize[1], 3],name="z")
+
+        self.y_real = tf.placeholder(tf.float32, [self.nBatch, self.imageSize[0], self.imageSize[1], 3],name="image")
+        self.y_fake = self.buildGenerator(self.z)
+
+        self.d_real, self.d_real_logit = self.buildDiscriminator(self.y_real)
+        self.d_fake, self.d_fake_logit = self.buildDiscriminator(self.y_fake)
+
+        # define loss
+        self.d_loss_real = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.d_real_logit,labels=tf.ones_like(self.d_real_logit)))
+        self.d_loss_fake = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.d_fake_logit,labels=tf.ones_like(self.d_fake_logit)))
+
+        self.d_loss = self.d_loss_real + self.d_loss_fake
+
+        # define optimizer
+        self.g_optimizer = tf.train.AdamOptimizer(self.learnRate).minimizer(self.g_loss, var_list=[x for x in tf.trainable_variables() if "Generator_"     in x.name])
+        self.d_optimizer = tf.train.AdamOptimizer(self.learnRate).minimizer(self.d_loss, var_list=[x for x in tf.trainable_variables() if "Discriminator_" in x.name])
+
         return
-    def train(self):
-        return
 
+    def train(self,f_batch):
+        # define session
+        config = tf.ConfigProto(gpu_options=tf.GPUOptions(per_process_gpu_memory_fraction=0.15))
+        self.sess = tf.Session(config=config)
+
+        initOP = self.global_variables_initializer()
+        self.sess.run(initOP)
+
+        epoch = -1
+        while True:
+            epoch += 1
+
+            batch_images,_ = f_batch()
+            batch_z        = np.random.uniform(-1,+1,[self.nBatch,self.zdim]).astype(np.float32)
+
+            # update generator
+            _,loss = self.sess.run([self.d_optimizer,self.d_loss],feed_dict={self.x:batch_images, self.x:batch_z})
+            _,loss = self.sess.run([self.g_optimizer,self.d_loss],feed_dict={self.z:batch_z})
+            _,loss = self.sess.run([self.g_optimizer,self.d_loss],feed_dict={self.z:batch_z})
+            print loss
